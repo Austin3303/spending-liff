@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Monthly Spending</title>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@500&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'DM Sans',sans-serif;background:#0f0f0f;color:#f0f0f0;padding:20px 16px 40px;min-height:100vh}
+  h2{font-size:20px;font-weight:600;margin-bottom:16px}
+  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .top h1{font-size:22px;font-weight:600}
+  .top h1 span{color:#c8f135}
+  select{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;color:#f0f0f0;font-family:'DM Sans',sans-serif;font-size:14px;padding:8px 12px;outline:none}
+  .gauge-wrap{display:flex;flex-direction:column;align-items:center;margin-bottom:24px}
+  .gauge-label{font-size:12px;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px}
+  .gauge-amount{font-family:'DM Mono',monospace;font-size:28px;font-weight:500;color:#c8f135;margin-top:-8px}
+  .gauge-sub{font-size:12px;color:#888;margin-top:2px}
+  .section{margin-bottom:28px}
+  .section-title{font-size:11px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:#888;margin-bottom:12px}
+  .chart-box{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:16px;padding:16px}
+  .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+  .legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#aaa}
+  .legend-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  table th{color:#888;font-weight:500;padding:6px 0;text-align:left;border-bottom:1px solid #2a2a2a}
+  table th:last-child,table td:last-child{text-align:right}
+  table td{padding:8px 0;border-bottom:1px solid #1e1e1e;color:#ddd}
+  .loading{text-align:center;color:#888;padding:40px 0;font-size:14px}
+  .rank{color:#555;font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>Spend <span>Report</span></h1>
+  <select id="monthSelect"></select>
+</div>
+
+<div id="content" class="loading">Loading...</div>
+
+<script>
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzSStj3k5JLsHmQvKTKpS1upXBdNiHXpwXm6ugNnHpdbTqdUR51H2Om1xbL_Eo2UUFWpA/exec";
+const LIFF_ID = "2009679263-4JGlOXcy";
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const CAT_COLORS = {
+  Food:"#c8f135", Transport:"#35c8f1", Shopping:"#f1c835",
+  Health:"#f135c8", Entertainment:"#8835f1", Trip:"#35f1c8",
+  Utilities:"#f18835", Other:"#888888"
+};
+
+let allData = [];
+let gaugeChart, pieChart, barChart;
+
+liff.init({liffId: LIFF_ID}).catch(()=>{});
+
+async function loadData() {
+  try {
+    const res = await fetch(SCRIPT_URL);
+    allData = await res.json();
+    buildMonthOptions();
+    render();
+  } catch(e) {
+    document.getElementById("content").innerHTML = "<p style='color:#f66;padding:20px'>Failed to load data. Check Apps Script deployment.</p>";
+  }
+}
+
+function buildMonthOptions() {
+  const sel = document.getElementById("monthSelect");
+  const months = [...new Set(allData.map(r => `${r.year}-${String(r.month).padStart(2,"0")}`))].sort().reverse();
+  months.forEach(m => {
+    const [y, mo] = m.split("-");
+    const opt = document.createElement("option");
+    opt.value = m;
+    opt.textContent = `${MONTHS[parseInt(mo)-1]} ${y}`;
+    sel.appendChild(opt);
+  });
+  sel.addEventListener("change", render);
+}
+
+function render() {
+  const sel = document.getElementById("monthSelect").value;
+  if (!sel) return;
+  const [y, mo] = sel.split("-");
+  const filtered = allData.filter(r => r.year == y && r.month == parseInt(mo));
+  const total = filtered.reduce((s,r) => s + parseFloat(r.amount||0), 0);
+
+  // category totals
+  const catMap = {};
+  filtered.forEach(r => {
+    const c = r.category || "Other";
+    catMap[c] = (catMap[c]||0) + parseFloat(r.amount||0);
+  });
+
+  // 3-month history
+  const histMonths = [];
+  for (let i=2; i>=0; i--) {
+    const d = new Date(parseInt(y), parseInt(mo)-1-i, 1);
+    histMonths.push({year: d.getFullYear(), month: d.getMonth()+1, label: MONTHS[d.getMonth()]});
+  }
+
+  const html = `
+    <div class="gauge-wrap">
+      <div class="gauge-label">Total this month</div>
+      <div style="position:relative;width:200px;height:110px"><canvas id="gaugeChart"></canvas></div>
+      <div class="gauge-amount">${total.toLocaleString()} THB</div>
+      <div class="gauge-sub">${filtered.length} transactions</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">By Category</div>
+      <div class="chart-box">
+        <div style="position:relative;height:220px"><canvas id="pieChart"></canvas></div>
+        <div class="legend" id="pieLegend"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Top 5 Spending</div>
+      <div class="chart-box">
+        <table>
+          <tr><th>#</th><th>Item</th><th>Category</th><th>THB</th></tr>
+          ${filtered.sort((a,b)=>b.amount-a.amount).slice(0,5).map((r,i)=>`
+            <tr>
+              <td class="rank">${i+1}</td>
+              <td>${r.item}</td>
+              <td style="color:#888">${r.category||"Other"}</td>
+              <td>${parseFloat(r.amount).toLocaleString()}</td>
+            </tr>`).join("")}
+        </table>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">3-Month History</div>
+      <div class="chart-box">
+        <div style="position:relative;height:200px"><canvas id="barChart"></canvas></div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("content").innerHTML = html;
+
+  // gauge
+  const maxBudget = Math.max(total * 1.5, 1000);
+  gaugeChart = new Chart(document.getElementById("gaugeChart"), {
+    type: "doughnut",
+    data: {
+      datasets: [{
+        data: [total, Math.max(maxBudget - total, 0)],
+        backgroundColor: ["#c8f135","#2a2a2a"],
+        borderWidth: 0,
+        circumference: 180,
+        rotation: 270
+      }]
+    },
+    options: {responsive:true, maintainAspectRatio:false, cutout:"75%", plugins:{legend:{display:false},tooltip:{enabled:false}}}
+  });
+
+  // pie
+  const catLabels = Object.keys(catMap);
+  const catVals = catLabels.map(k => catMap[k]);
+  const catColorsArr = catLabels.map(k => CAT_COLORS[k]||"#888");
+
+  pieChart = new Chart(document.getElementById("pieChart"), {
+    type: "doughnut",
+    data: {
+      labels: catLabels,
+      datasets: [{data: catVals, backgroundColor: catColorsArr, borderWidth: 0}]
+    },
+    options: {responsive:true, maintainAspectRatio:false, cutout:"60%", plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${ctx.raw.toLocaleString()} THB`}}}}
+  });
+
+  // legend
+  const legendEl = document.getElementById("pieLegend");
+  catLabels.forEach((c,i) => {
+    const pct = total > 0 ? Math.round(catVals[i]/total*100) : 0;
+    legendEl.innerHTML += `<div class="legend-item"><div class="legend-dot" style="background:${catColorsArr[i]}"></div>${c} ${pct}%</div>`;
+  });
+
+  // bar - 3 months
+  const cats = [...new Set(allData.map(r => r.category||"Other"))];
+  const barDatasets = cats.map(cat => ({
+    label: cat,
+    data: histMonths.map(hm => {
+      const rows = allData.filter(r => r.year==hm.year && r.month==hm.month && (r.category||"Other")==cat);
+      return rows.reduce((s,r)=>s+parseFloat(r.amount||0),0);
+    }),
+    backgroundColor: CAT_COLORS[cat]||"#888",
+    borderRadius: 4,
+    borderWidth: 0
+  }));
+
+  barChart = new Chart(document.getElementById("barChart"), {
+    type: "bar",
+    data: {labels: histMonths.map(m=>m.label), datasets: barDatasets},
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      scales:{
+        x:{stacked:true, ticks:{color:"#888"}, grid:{color:"#1e1e1e"}},
+        y:{stacked:true, ticks:{color:"#888", callback:v=>v.toLocaleString()}, grid:{color:"#1e1e1e"}}
+      },
+      plugins:{legend:{display:false}, tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw.toLocaleString()} THB`}}}
+    }
+  });
+}
+
+loadData();
+</script>
+</body>
+</html>
